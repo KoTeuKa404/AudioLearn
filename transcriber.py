@@ -1,3 +1,4 @@
+import inspect
 import logging
 import os
 import queue
@@ -133,6 +134,16 @@ def build_transcriber(config: dict):
             compute_type=transcription_cfg.get("compute_type", "int8"),
             vad_filter=bool(transcription_cfg.get("vad_filter", True)),
             beam_size=int(transcription_cfg.get("beam_size", 1)),
+            condition_on_previous_text=bool(
+                transcription_cfg.get("condition_on_previous_text", False)
+            ),
+            repetition_penalty=float(transcription_cfg.get("repetition_penalty", 1.0)),
+            no_repeat_ngram_size=int(transcription_cfg.get("no_repeat_ngram_size", 0)),
+            compression_ratio_threshold=float(
+                transcription_cfg.get("compression_ratio_threshold", 2.4)
+            ),
+            log_prob_threshold=float(transcription_cfg.get("log_prob_threshold", -1.0)),
+            no_speech_threshold=float(transcription_cfg.get("no_speech_threshold", 0.6)),
         )
     if engine in ("openai", "api"):
         online_cfg = config.get("online", {})
@@ -153,23 +164,46 @@ class FasterWhisperTranscriber:
         compute_type: str,
         vad_filter: bool,
         beam_size: int,
+        condition_on_previous_text: bool,
+        repetition_penalty: float,
+        no_repeat_ngram_size: int,
+        compression_ratio_threshold: float,
+        log_prob_threshold: float,
+        no_speech_threshold: float,
     ) -> None:
         from faster_whisper import WhisperModel
 
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
         self.vad_filter = vad_filter
         self.beam_size = max(1, int(beam_size))
+        self.condition_on_previous_text = condition_on_previous_text
+        self.repetition_penalty = max(1.0, float(repetition_penalty))
+        self.no_repeat_ngram_size = max(0, int(no_repeat_ngram_size))
+        self.compression_ratio_threshold = compression_ratio_threshold
+        self.log_prob_threshold = log_prob_threshold
+        self.no_speech_threshold = no_speech_threshold
+        self._supported_transcribe_args = set(inspect.signature(self.model.transcribe).parameters)
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, language: str) -> str:
         lang = None if language == "auto" else language
-        segments, _info = self.model.transcribe(
-            audio,
-            language=lang,
-            task="transcribe",
-            beam_size=self.beam_size,
-            vad_filter=self.vad_filter,
-            condition_on_previous_text=False,
-        )
+        kwargs = {
+            "language": lang,
+            "task": "transcribe",
+            "beam_size": self.beam_size,
+            "vad_filter": self.vad_filter,
+            "condition_on_previous_text": self.condition_on_previous_text,
+            "compression_ratio_threshold": self.compression_ratio_threshold,
+            "log_prob_threshold": self.log_prob_threshold,
+            "no_speech_threshold": self.no_speech_threshold,
+            "repetition_penalty": self.repetition_penalty,
+            "no_repeat_ngram_size": self.no_repeat_ngram_size,
+        }
+        safe_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in self._supported_transcribe_args and value is not None
+        }
+        segments, _info = self.model.transcribe(audio, **safe_kwargs)
         texts = []
         for segment in segments:
             text = segment.text.strip()
