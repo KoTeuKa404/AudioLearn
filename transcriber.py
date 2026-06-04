@@ -124,13 +124,15 @@ class TranscribeWorker(threading.Thread):
 
 
 def build_transcriber(config: dict):
-    engine = str(config["transcription"].get("engine", "faster-whisper")).lower()
+    transcription_cfg = config["transcription"]
+    engine = str(transcription_cfg.get("engine", "faster-whisper")).lower()
     if engine in ("faster-whisper", "whisper"):
         return FasterWhisperTranscriber(
-            model_name=config["transcription"].get("model", "base"),
-            device=config["transcription"].get("device", "cpu"),
-            compute_type=config["transcription"].get("compute_type", "int8"),
-            vad_filter=bool(config["transcription"].get("vad_filter", True)),
+            model_name=transcription_cfg.get("model", "base"),
+            device=transcription_cfg.get("device", "cpu"),
+            compute_type=transcription_cfg.get("compute_type", "int8"),
+            vad_filter=bool(transcription_cfg.get("vad_filter", True)),
+            beam_size=int(transcription_cfg.get("beam_size", 1)),
         )
     if engine in ("openai", "api"):
         online_cfg = config.get("online", {})
@@ -144,11 +146,19 @@ def build_transcriber(config: dict):
 
 
 class FasterWhisperTranscriber:
-    def __init__(self, model_name: str, device: str, compute_type: str, vad_filter: bool) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        device: str,
+        compute_type: str,
+        vad_filter: bool,
+        beam_size: int,
+    ) -> None:
         from faster_whisper import WhisperModel
 
         self.model = WhisperModel(model_name, device=device, compute_type=compute_type)
         self.vad_filter = vad_filter
+        self.beam_size = max(1, int(beam_size))
 
     def transcribe(self, audio: np.ndarray, sample_rate: int, language: str) -> str:
         lang = None if language == "auto" else language
@@ -156,7 +166,7 @@ class FasterWhisperTranscriber:
             audio,
             language=lang,
             task="transcribe",
-            beam_size=1,
+            beam_size=self.beam_size,
             vad_filter=self.vad_filter,
             condition_on_previous_text=False,
         )
