@@ -28,8 +28,8 @@ def main() -> None:
     buffer = SubtitleBuffer(max_lines=config["ui"]["max_lines"])
 
     def on_text(text: str) -> None:
-        if buffer.add(text):
-            text_queue.put(text)
+        if buffer.add(text) and buffer.last_text:
+            text_queue.put(buffer.last_text)
 
     pipeline = AudioPipeline(config, stop_event)
     pipeline.start()
