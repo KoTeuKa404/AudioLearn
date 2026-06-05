@@ -16,7 +16,6 @@ class SubtitleOverlay:
         self.force_topmost = bool(ui_config.get("force_topmost", False))
         self.draggable = bool(ui_config.get("draggable", False))
         self._drag_start = None
-        self.scroll_text = ""
         self.last_chunk = ""
 
         self.root = tk.Tk()
@@ -67,10 +66,7 @@ class SubtitleOverlay:
         self.text.pack(fill="both", expand=True, padx=padding, pady=padding)
         self.text.tag_configure("base", foreground=fg, justify="left")
         self.text.tag_configure("last", foreground=last_fg, justify="left")
-        limit_override = ui_config.get("scroll_char_limit")
-        self.scroll_char_limit = int(limit_override) if limit_override else int(
-            self.wrap_chars * self.max_lines * 4
-        )
+
         if self.placeholder_text:
             self._render_text(self.placeholder_text, "")
             self.current_text = self.placeholder_text
@@ -120,13 +116,16 @@ class SubtitleOverlay:
         try:
             while True:
                 text = self.text_queue.get_nowait()
-                if text and self._append_scroll_text(text):
-                    updated = True
+                if text:
+                    self.last_chunk = self._get_last_line(text)
+                    if text != self.current_text:
+                        self.current_text = text
+                        updated = True
         except queue.Empty:
             pass
 
         if updated:
-            self._render_scroll_text()
+            self._render_text(self.current_text, self.last_chunk)
             self.root.update_idletasks()
             if self.force_topmost:
                 self.root.lift()
@@ -141,40 +140,10 @@ class SubtitleOverlay:
         self._poll_queue()
         self.root.mainloop()
 
-    def _append_scroll_text(self, text: str) -> bool:
-        chunk = " ".join(text.split())
-        if not chunk:
-            return False
-        self.last_chunk = chunk
-        if self.scroll_text:
-            self.scroll_text = f"{self.scroll_text} {chunk}"
-        else:
-            self.scroll_text = chunk
-        if self.scroll_char_limit > 0 and len(self.scroll_text) > self.scroll_char_limit:
-            excess = len(self.scroll_text) - self.scroll_char_limit
-            cut = self.scroll_text.find(" ", excess)
-            if cut == -1:
-                self.scroll_text = self.scroll_text[-self.scroll_char_limit :]
-            else:
-                self.scroll_text = self.scroll_text[cut + 1 :]
-        return True
-
-    def _fit_lines(self, text: str) -> list[str]:
-        if not text:
-            return []
-        lines: list[str] = []
-        for raw in text.splitlines():
-            wrapped = textwrap.wrap(raw, width=self.wrap_chars) or [""]
-            lines.extend(wrapped)
-        if len(lines) > self.max_lines:
-            lines = lines[-self.max_lines :]
-        return lines
-
-    def _render_scroll_text(self) -> None:
-        if self.scroll_text == self.current_text:
-            return
-        self._render_text(self.scroll_text, self.last_chunk)
-        self.current_text = self.scroll_text
+    @staticmethod
+    def _get_last_line(text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[-1] if lines else ""
 
     def _render_text(self, display_text: str, highlight_chunk: str) -> None:
         self.text.configure(state="normal")
