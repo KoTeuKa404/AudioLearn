@@ -24,12 +24,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     stop_event = threading.Event()
-    text_queue: queue.Queue[str] = queue.Queue()
+    text_queue: queue.Queue = queue.Queue()
     buffer = SubtitleBuffer(max_lines=config["ui"]["max_lines"])
 
     def on_text(text: str) -> None:
         if buffer.add(text):
-            text_queue.put(buffer.render())
+            text_queue.put({
+                "display_text": buffer.render(),
+                "highlight_text": buffer.last_text,
+            })
 
     pipeline = AudioPipeline(config, stop_event)
     pipeline.start()
