@@ -115,12 +115,12 @@ class SubtitleOverlay:
         updated = False
         try:
             while True:
-                text = self.text_queue.get_nowait()
-                if text:
-                    self.last_chunk = self._get_last_line(text)
-                    if text != self.current_text:
-                        self.current_text = text
-                        updated = True
+                payload = self.text_queue.get_nowait()
+                display_text, highlight_text = self._parse_payload(payload)
+                if display_text and display_text != self.current_text:
+                    self.current_text = display_text
+                    self.last_chunk = highlight_text
+                    updated = True
         except queue.Empty:
             pass
 
@@ -145,12 +145,21 @@ class SubtitleOverlay:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         return lines[-1] if lines else ""
 
+    def _parse_payload(self, payload) -> tuple[str, str]:
+        if isinstance(payload, dict):
+            display_text = str(payload.get("display_text", "")).strip()
+            highlight_text = str(payload.get("highlight_text", "")).strip()
+            return display_text, highlight_text
+
+        display_text = str(payload).strip()
+        return display_text, self._get_last_line(display_text)
+
     def _render_text(self, display_text: str, highlight_chunk: str) -> None:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         if display_text:
             self.text.insert("end", display_text, ("base",))
-            if highlight_chunk:
+            if highlight_chunk and highlight_chunk != display_text:
                 start = display_text.rfind(highlight_chunk)
                 if start != -1:
                     end = start + len(highlight_chunk)
