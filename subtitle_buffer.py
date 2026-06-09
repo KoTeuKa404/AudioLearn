@@ -1,4 +1,3 @@
-from collections import deque
 import re
 
 
@@ -14,14 +13,14 @@ def _normalized_words(tokens: list[str]) -> list[str]:
     return [word for word in (_normalize_word(token) for token in tokens) if word]
 
 
-def _collapse_adjacent_repeats(tokens: list[str], max_phrase_words: int = 12) -> list[str]:
+def _collapse_adjacent_repeats(tokens: list[str], max_phrase_words: int = 10) -> list[str]:
     if len(tokens) < 2:
         return tokens
 
     tokens = tokens[:]
     changed = True
     passes = 0
-    while changed and passes < 6:
+    while changed and passes < 8:
         changed = False
         passes += 1
         i = 0
@@ -41,82 +40,62 @@ def _collapse_adjacent_repeats(tokens: list[str], max_phrase_words: int = 12) ->
     return tokens
 
 
-def _remove_prefix_overlap(text_tokens: list[str], recent_tokens: list[str], max_overlap: int = 18) -> list[str]:
-    if not text_tokens or not recent_tokens:
-        return text_tokens
-
-    text_norm = _normalized_words(text_tokens)
-    recent_norm = _normalized_words(recent_tokens)
-    if not text_norm or not recent_norm:
-        return text_tokens
-
-    max_size = min(max_overlap, len(text_norm), len(recent_norm))
-    overlap_size = 0
-    for size in range(max_size, 0, -1):
-        if recent_norm[-size:] == text_norm[:size]:
-            overlap_size = size
+def _trim_to_last_words(tokens: list[str], max_words: int) -> list[str]:
+    if max_words <= 0:
+        return tokens
+    word_count = 0
+    cut_index = 0
+    for index in range(len(tokens) - 1, -1, -1):
+        if _normalize_word(tokens[index]):
+            word_count += 1
+        if word_count >= max_words:
+            cut_index = index
             break
-
-    if overlap_size <= 0:
-        return text_tokens
-
-    words_to_skip = overlap_size
-    result = []
-    for token in text_tokens:
-        if words_to_skip > 0 and _normalize_word(token):
-            words_to_skip -= 1
-            continue
-        result.append(token)
-    return result
+    if word_count < max_words:
+        return tokens
+    return tokens[cut_index:]
 
 
-def _is_duplicate_of_recent(text_tokens: list[str], recent_tokens: list[str]) -> bool:
-    text_norm = _normalized_words(text_tokens)
-    recent_norm = _normalized_words(recent_tokens)
-    if not text_norm or not recent_norm:
-        return False
-
-    if len(text_norm) <= 2:
-        return False
-
-    window = " ".join(recent_norm[-80:])
-    phrase = " ".join(text_norm)
-    return phrase in window
+def _same_text(left: str, right: str) -> bool:
+    return _normalized_words(left.split()) == _normalized_words(right.split())
 
 
-def clean_subtitle_chunk(text: str, recent_text: str = "") -> str:
+def clean_subtitle_window(text: str, max_words: int = 46) -> str:
     text = " ".join(str(text).split()).strip()
     if not text:
         return ""
 
     tokens = text.split()
-    recent_tokens = recent_text.split()
-
     tokens = _collapse_adjacent_repeats(tokens)
-    tokens = _remove_prefix_overlap(tokens, recent_tokens)
+    tokens = _trim_to_last_words(tokens, max_words)
     tokens = _collapse_adjacent_repeats(tokens)
-
-    if _is_duplicate_of_recent(tokens, recent_tokens):
-        return ""
-
     return " ".join(tokens).strip()
 
 
 class SubtitleBuffer:
-    def __init__(self, max_lines: int) -> None:
-        self.lines = deque(maxlen=max_lines)
+    """Live-caption stabilizer.
+
+    This intentionally does not append every Whisper result forever. Whisper often
+    re-transcribes the same rolling audio window, so appending creates duplicated
+    lyrics. The buffer keeps the current rolling caption window and lets the
+    overlay replace its text, similar to mobile live captions.
+    """
+
+    def __init__(self, max_lines: int, max_words: int | None = None) -> None:
+        self.max_lines = max_lines
+        self.max_words = max_words or max(28, max_lines * 12)
+        self.current_text = ""
         self.last_text = ""
 
     def add(self, text: str) -> bool:
-        recent_text = self.render()
-        text = clean_subtitle_chunk(text, recent_text)
-        self.last_text = text
-        if not text:
+        cleaned = clean_subtitle_window(text, self.max_words)
+        self.last_text = cleaned
+        if not cleaned:
             return False
-        if self.lines and text == self.lines[-1]:
+        if _same_text(cleaned, self.current_text):
             return False
-        self.lines.append(text)
+        self.current_text = cleaned
         return True
 
     def render(self) -> str:
-        return "\n".join(self.lines)
+        return self.current_text
