@@ -3,6 +3,18 @@ import re
 
 _WORD_RE = re.compile(r"[A-Za-z0-9']+")
 
+_HALLUCINATION_PHRASES = (
+    "thanks for watching",
+    "thank you for watching",
+    "thanks you for watching",
+    "thank you",
+    "thanks you",
+    "subtitles by",
+    "subtitle by",
+    "captions by",
+    "caption by",
+)
+
 
 def _normalize_word(word: str) -> str:
     found = _WORD_RE.findall(word.lower())
@@ -11,6 +23,10 @@ def _normalize_word(word: str) -> str:
 
 def _normalized_words(tokens: list[str]) -> list[str]:
     return [word for word in (_normalize_word(token) for token in tokens) if word]
+
+
+def _phrase_words(phrase: str) -> list[str]:
+    return _normalized_words(phrase.split())
 
 
 def _collapse_adjacent_repeats(tokens: list[str], max_phrase_words: int = 10) -> list[str]:
@@ -98,16 +114,56 @@ def _drop_words_from_start(tokens: list[str], word_count: int) -> list[str]:
     return result
 
 
+def _remove_word_range(tokens: list[str], start: int, length: int) -> list[str]:
+    if length <= 0:
+        return tokens
+    result = []
+    words_seen = 0
+    for token in tokens:
+        if _normalize_word(token):
+            if start <= words_seen < start + length:
+                words_seen += 1
+                continue
+            words_seen += 1
+        result.append(token)
+    return result
+
+
+def _remove_hallucination_phrases(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return tokens
+
+    result = tokens[:]
+    changed = True
+    while changed:
+        changed = False
+        normalized = _normalized_words(result)
+        for phrase in _HALLUCINATION_PHRASES:
+            phrase_words = _phrase_words(phrase)
+            if not phrase_words or len(phrase_words) > len(normalized):
+                continue
+            for index in range(0, len(normalized) - len(phrase_words) + 1):
+                if normalized[index : index + len(phrase_words)] == phrase_words:
+                    result = _remove_word_range(result, index, len(phrase_words))
+                    changed = True
+                    break
+            if changed:
+                break
+    return result
+
+
 def clean_subtitle_window(text: str, max_words: int = 46) -> str:
     text = " ".join(str(text).split()).strip()
     if not text:
         return ""
 
     tokens = text.split()
+    tokens = _remove_hallucination_phrases(tokens)
     tokens = _collapse_adjacent_repeats(tokens)
     tokens = _trim_to_last_words(tokens, max_words)
+    tokens = _remove_hallucination_phrases(tokens)
     tokens = _collapse_adjacent_repeats(tokens)
-    return " ".join(tokens).strip()
+    return " ".join(tokens).strip(" ,.!?-–—").strip()
 
 
 class SubtitleBuffer:
@@ -134,7 +190,12 @@ class SubtitleBuffer:
             return False
 
         new_tokens = cleaned.split()
+        new_tokens = _remove_hallucination_phrases(new_tokens)
         new_tokens = _collapse_adjacent_repeats(new_tokens)
+
+        if not new_tokens:
+            self.last_text = ""
+            return False
 
         if _contains_phrase(self.tokens[-self.history_words_limit :], new_tokens):
             self.last_text = ""
@@ -142,6 +203,7 @@ class SubtitleBuffer:
 
         overlap = _longest_suffix_prefix_overlap(self.tokens, new_tokens)
         tail_tokens = _drop_words_from_start(new_tokens, overlap)
+        tail_tokens = _remove_hallucination_phrases(tail_tokens)
 
         if not tail_tokens:
             self.last_text = ""
@@ -154,6 +216,7 @@ class SubtitleBuffer:
                 return False
 
         self.tokens.extend(tail_tokens)
+        self.tokens = _remove_hallucination_phrases(self.tokens)
         self.tokens = _collapse_adjacent_repeats(self.tokens)
         self.tokens = _trim_to_last_words(self.tokens, self.history_words_limit)
 
