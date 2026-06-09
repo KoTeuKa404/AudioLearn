@@ -60,6 +60,44 @@ def _same_text(left: str, right: str) -> bool:
     return _normalized_words(left.split()) == _normalized_words(right.split())
 
 
+def _contains_phrase(haystack_tokens: list[str], needle_tokens: list[str]) -> bool:
+    haystack = _normalized_words(haystack_tokens)
+    needle = _normalized_words(needle_tokens)
+    if not haystack or not needle or len(needle) > len(haystack):
+        return False
+    for index in range(0, len(haystack) - len(needle) + 1):
+        if haystack[index : index + len(needle)] == needle:
+            return True
+    return False
+
+
+def _longest_suffix_prefix_overlap(
+    left_tokens: list[str],
+    right_tokens: list[str],
+    max_overlap: int = 32,
+) -> int:
+    left_norm = _normalized_words(left_tokens)
+    right_norm = _normalized_words(right_tokens)
+    max_size = min(max_overlap, len(left_norm), len(right_norm))
+    for size in range(max_size, 0, -1):
+        if left_norm[-size:] == right_norm[:size]:
+            return size
+    return 0
+
+
+def _drop_words_from_start(tokens: list[str], word_count: int) -> list[str]:
+    if word_count <= 0:
+        return tokens
+    result = []
+    remaining = word_count
+    for token in tokens:
+        if remaining > 0 and _normalize_word(token):
+            remaining -= 1
+            continue
+        result.append(token)
+    return result
+
+
 def clean_subtitle_window(text: str, max_words: int = 46) -> str:
     text = " ".join(str(text).split()).strip()
     if not text:
@@ -73,28 +111,60 @@ def clean_subtitle_window(text: str, max_words: int = 46) -> str:
 
 
 class SubtitleBuffer:
-    """Live-caption stabilizer.
+    """Live-caption stabilizer with short visible history.
 
-    This intentionally does not append every Whisper result forever. Whisper often
-    re-transcribes the same rolling audio window, so appending creates duplicated
-    lyrics. The buffer keeps the current rolling caption window and lets the
-    overlay replace its text, similar to mobile live captions.
+    Whisper re-transcribes overlapping audio windows. Appending every returned
+    chunk duplicates lyrics, while replacing the whole caption removes history.
+    This buffer merges new chunks into a rolling transcript using suffix/prefix
+    overlap and renders only the last visible words.
     """
 
     def __init__(self, max_lines: int, max_words: int | None = None) -> None:
         self.max_lines = max_lines
-        self.max_words = max_words or max(28, max_lines * 12)
+        self.max_words = max_words or max(32, max_lines * 14)
+        self.history_words_limit = self.max_words * 3
+        self.tokens: list[str] = []
         self.current_text = ""
         self.last_text = ""
 
     def add(self, text: str) -> bool:
         cleaned = clean_subtitle_window(text, self.max_words)
-        self.last_text = cleaned
         if not cleaned:
+            self.last_text = ""
             return False
-        if _same_text(cleaned, self.current_text):
+
+        new_tokens = cleaned.split()
+        new_tokens = _collapse_adjacent_repeats(new_tokens)
+
+        if _contains_phrase(self.tokens[-self.history_words_limit :], new_tokens):
+            self.last_text = ""
             return False
-        self.current_text = cleaned
+
+        overlap = _longest_suffix_prefix_overlap(self.tokens, new_tokens)
+        tail_tokens = _drop_words_from_start(new_tokens, overlap)
+
+        if not tail_tokens:
+            self.last_text = ""
+            return False
+
+        if overlap == 0 and len(self.tokens) >= 8:
+            recent = self.tokens[-self.max_words :]
+            if _contains_phrase(recent, tail_tokens[: max(3, min(8, len(tail_tokens)))]):
+                self.last_text = ""
+                return False
+
+        self.tokens.extend(tail_tokens)
+        self.tokens = _collapse_adjacent_repeats(self.tokens)
+        self.tokens = _trim_to_last_words(self.tokens, self.history_words_limit)
+
+        visible_tokens = _trim_to_last_words(self.tokens, self.max_words)
+        visible_text = " ".join(visible_tokens).strip()
+        self.last_text = " ".join(tail_tokens).strip()
+
+        if not visible_text or _same_text(visible_text, self.current_text):
+            return False
+
+        self.current_text = visible_text
         return True
 
     def render(self) -> str:
